@@ -121,12 +121,12 @@ class Type_Classifier(BertPreTrainedModel):
 
         return outputs
 
-    def loss(self, loss_type, logits_bio, delta=0.1):
+    def loss(self, loss_type, logits_bio, tau=0.1, eps=0.0):
         # loss_type: B*L 
         # logits_bio: B*L, C
         # delta: music 0.1
-        logits_bio = torch.softmax(logits_bio.detach()/delta, dim=-1)
-        weight = 1.0-logits_bio[:, -1]
+        logits_bio = torch.softmax(logits_bio.detach()/tau, dim=-1)
+        weight = 1.0-logits_bio[:, -1]+eps
         loss = torch.mean(loss_type*weight)
         return loss
 
@@ -169,46 +169,9 @@ class Type_Classifier(BertPreTrainedModel):
 
         return loss
 
-    def adv_attack(self, emb, loss, epsilon):
+    def adv_attack(self, emb, loss, mu):
         loss_grad = torch.autograd.grad(loss, emb, retain_graph=True)[0]
         loss_grad_norm = torch.sqrt(torch.sum(loss_grad**2, dim=2))
-        perturbed_sentence = emb + epsilon * (loss_grad/(loss_grad_norm.unsqueeze(2)+1e-5))
+        perturbed_sentence = emb + mu * (loss_grad/(loss_grad_norm.unsqueeze(2)+1e-5))
         
         return perturbed_sentence
-
-# class Type_Learner(BertPreTrainedModel):
-#     def __init__(self, config, type_num_labels, device):
-#         super().__init__(config)
-
-#         self.device_ = device # torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-#         self.type_num_labels = type_num_labels
-#         self.bert = BertModel(config)
-#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-#         self.classifier_type = nn.Linear(config.hidden_size, type_num_labels+1)
-
-#         self.init_weights()
-
-#     def forward(
-#         self,
-#         input_ids=None,
-#         attention_mask=None,
-#         token_type_ids=None,
-#         position_ids=None,
-#         head_mask=None,
-#         inputs_embeds=None,
-#         labels=None,
-#         label_mask=None,
-#     ):
-#         outputs = self.bert(
-#             input_ids,
-#             attention_mask=attention_mask,
-#             token_type_ids=token_type_ids,
-#             position_ids=position_ids,
-#             head_mask=head_mask,
-#             inputs_embeds=inputs_embeds,
-#         )
-#         final_embedding = outputs[0] # B, L, D
-#         sequence_output = self.dropout(final_embedding)
-#         logits = self.classifier_type(sequence_output) # B, L, C
-
-#         return logits

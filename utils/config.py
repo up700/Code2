@@ -47,21 +47,6 @@ def config():
         required=True,
         help="The output directory where the model predictions and checkpoints will be written.",
     )
-    # parser.add_argument(
-    #     "--checkpoints",
-    #     default=None,
-    #     type=str,
-    #     required=True,
-    #     help="The checkpoints have been written.",
-    # )
-
-    # Other parameters
-    # parser.add_argument(
-    #     "--student1_config_name", default="", type=str, help="Pretrained config name or path if not the same as model_name"
-    # )
-    # parser.add_argument(
-    #     "--student2_config_name", default="", type=str, help="Pretrained config name or path if not the same as model_name"
-    # )
     parser.add_argument(
         "--tokenizer_name_or_path",
         default="bert-base-uncased",
@@ -99,9 +84,8 @@ def config():
         "--do_lower_case", action="store_true", help="Set this flag if you are using an uncased model."
     )
 
+    parser.add_argument("--per_gpu_train_batch_size_src", default=8, type=int, help="Batch size per GPU/CPU for training.")
     parser.add_argument("--per_gpu_train_batch_size", default=8, type=int, help="Batch size per GPU/CPU for training.")
-    parser.add_argument("--per_gpu_train_batch_size_meta", default=8, type=int, help="Batch size per GPU/CPU for training.")
-    parser.add_argument("--per_gpu_train_batch_size_inter", default=8, type=int, help="Batch size per GPU/CPU for training.")
     parser.add_argument(
         "--per_gpu_eval_batch_size", default=8, type=int, help="Batch size per GPU/CPU for evaluation."
     )
@@ -157,23 +141,13 @@ def config():
         "See details at https://nvidia.github.io/apex/amp.html",
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
-    # parser.add_argument("--label_dim_ner", type=int, default=300, help="Dimension of NER label.")
-    # parser.add_argument("--label_dim_esi", type=int, default=300, help="Dimension of ESI label.")
-    # parser.add_argument("--label_dim_net", type=int, default=300, help="Dimension of NET label.")
 
     parser.add_argument(
-        "--warm_num_train_epochs", default=1.0, type=float, help="Total number of training epochs to perform."
-    )
-    parser.add_argument(
-        "--meta_update_steps", default=5, type=int, help="Total number of training epochs to perform."
+        "--tau_span", default=0.1, type=float, help="span loss tau"
     )
 
     parser.add_argument(
-        "--delta_span", default=0.1, type=float, help="span loss delta"
-    )
-
-    parser.add_argument(
-        "--delta_type", default=0.1, type=float, help="type loss delta"
+        "--tau_type", default=0.1, type=float, help="type loss tau"
     )
 
     parser.add_argument(
@@ -188,6 +162,17 @@ def config():
         "--beta", default=0.5, type=float, help="target ratio"
     )
 
+    parser.add_argument(
+        "--eps_span", default=0.0, type=float, help="span loss eps"
+    )
+
+    parser.add_argument(
+        "--eps_type", default=0.0, type=float, help="type loss eps"
+    )
+
+    parser.add_argument(
+        "--L", default=3, type=int, help="Shared task layers"
+    )
 
 
     args = parser.parse_args()

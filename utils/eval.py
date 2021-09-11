@@ -25,10 +25,10 @@ from flashtool import Logger
 #     bool(args.local_rank != -1),
 #     args.fp16,
 # )
-def evaluate(args, span_model, type_model, tokenizer, id_to_label_span, \
+def evaluate(vals, args, span_model, type_model, tokenizer, id_to_label_span, \
     pad_token_label_id, best, best_bio, mode, logger, prefix="", verbose=True):
     
-    _, eval_dataset, _ = load_and_cache_examples(args, tokenizer, pad_token_label_id, mode=mode)
+    _, eval_dataset = load_and_cache_examples(args, tokenizer, pad_token_label_id, mode=mode)
     span_to_id = {id_to_label_span[id_]:id_ for id_ in id_to_label_span}
     non_entity_id = span_to_id["O"]
     num_class = len(span_to_id)
@@ -140,6 +140,7 @@ def evaluate(args, span_model, type_model, tokenizer, id_to_label_span, \
 
     correct_preds, total_correct, total_preds = 0., 0., 0. # i variables
     correct_preds_bio, total_correct_bio, total_preds_bio = 0., 0., 0. # i variables
+    correct_preds_type, total_correct_type, total_preds_type = 0., 0., 0. # i variables
     # print("EVAL:")
     for ground_truth_id_type, predicted_id_type, ground_truth_id_bio, predicted_id_bio in zip(out_id_list_type, \
                                                             preds_id_list_type, out_id_list_bio, preds_id_list_bio):
@@ -160,6 +161,9 @@ def evaluate(args, span_model, type_model, tokenizer, id_to_label_span, \
         lab_pred_chunks = set(lab_pred_chunks)
         lab_pred_chunks_bio = set(lab_pred_chunks_bio)
 
+        lab_pred_type_chunks, _ = get_chunks(predicted_id_type, ground_truth_id_bio, tag_to_id(args.data_dir, args.dataset))
+        lab_pred_type_chunks = set(lab_pred_type_chunks)
+
         # Updating the i variables
         correct_preds += len(lab_chunks & lab_pred_chunks)
         total_preds   += len(lab_pred_chunks)
@@ -170,13 +174,23 @@ def evaluate(args, span_model, type_model, tokenizer, id_to_label_span, \
         total_preds_bio   += len(lab_pred_chunks_bio)
         total_correct_bio += len(lab_chunks_bio)
 
+        # Updating the i variables
+        correct_preds_type += len(lab_chunks & lab_pred_type_chunks)
+        total_preds_type   += len(lab_pred_type_chunks)
+        total_correct_type += len(lab_chunks)
+
     p   = correct_preds / total_preds if correct_preds > 0 else 0
     r   = correct_preds / total_correct if correct_preds > 0 else 0
     new_F  = 2 * p * r / (p + r) if correct_preds > 0 else 0
+    vals.append(new_F)
 
     p_bio   = correct_preds_bio / total_preds_bio if correct_preds_bio > 0 else 0
     r_bio   = correct_preds_bio / total_correct_bio if correct_preds_bio > 0 else 0
     new_F_bio  = 2 * p_bio * r_bio / (p_bio + r_bio) if correct_preds_bio > 0 else 0
+
+    p_type   = correct_preds_type / total_preds_type if correct_preds_type > 0 else 0
+    r_type   = correct_preds_type / total_correct_type if correct_preds_type > 0 else 0
+    new_F_type  = 2 * p_type * r_type / (p_type + r_type) if correct_preds_type > 0 else 0
 
     is_updated = False
     if new_F > best[-1]:
@@ -200,7 +214,10 @@ def evaluate(args, span_model, type_model, tokenizer, id_to_label_span, \
        "f1_bio": new_F_bio,
        "best_precision_bio": best_bio[0],
        "best_recall_bio": best_bio[1],
-       "best_f1_bio": best_bio[-1]
+       "best_f1_bio": best_bio[-1],
+       "precision_type": p_type,
+       "recall_type": r_type,
+       "f1_type": new_F_type,
     }
 
     logger.info("***** Eval results %s *****", prefix)

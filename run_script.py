@@ -20,8 +20,6 @@ from torch.nn import MSELoss
 from transformers import (
     WEIGHTS_NAME,
     AdamW,
-    RobertaConfig,
-    RobertaTokenizer,
     get_linear_schedule_with_warmup,
     BertTokenizer,
     BertConfig
@@ -30,17 +28,15 @@ from transformers import (
 from models.modeling_span import Span_Detector
 from models.modeling_type import Type_Classifier
 from utils.data_utils import load_and_cache_examples, get_labels
-# from utils.model_utils import mask_tokens, soft_frequency, opt_grad, get_hard_label, _update_mean_model_variables
 from utils.eval import evaluate
 from utils.config import config
-# from utils.loss_utils import CycleConsistencyLoss
+from utils.loss_utils import share_loss
 
 logger = logging.getLogger(__name__)
 
 MODEL_CLASSES = {
     "span": (Span_Detector, BertConfig, BertTokenizer),
     "type": (Type_Classifier, BertConfig, BertTokenizer),
-    # "finetune": (TokenClassification, BertConfig, BertTokenizer)
 }
 
 torch.set_printoptions(profile="full")
@@ -69,12 +65,7 @@ def initialize(args, tokenizer, t_total, span_num_labels, type_num_labels_src, t
     span_model.to(args.device)
     
     model_class, config_class, _ = MODEL_CLASSES["type"]
-    # config_class, model_class, _ = MODEL_CLASSES["student1"]
-    # config_s1 = config_class.from_pretrained(
-    #     args.student1_config_name if args.student1_config_name else args.student1_model_name_or_path,
-    #     num_labels=num_labels,
-    #     cache_dir=args.cache_dir if args.cache_dir else None,
-    # )
+
     config = config_class.from_pretrained(
         args.type_model_name_or_path,
         cache_dir=args.cache_dir if args.cache_dir else None,
@@ -118,16 +109,6 @@ def initialize(args, tokenizer, t_total, span_num_labels, type_num_labels_src, t
         optimizer_type, num_warmup_steps=args.warmup_steps, num_training_steps=t_total
     )
 
-    # if args.fp16:
-    #     try:
-    #         from apex import amp
-    #     except ImportError:
-    #         raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
-    #     # [span_model, type_model], [optimizer_span, optimizer_type] = amp.initialize(
-    #     #              [span_model, type_model], [optimizer_span, optimizer_type], opt_level=args.fp16_opt_level)
-    #     span_model, optimizer_span = amp.initialize(
-    #                  span_model, optimizer_span, opt_level=args.fp16_opt_level)
-
     # Multi-gpu training (should be after apex fp16 initialization)
     if args.n_gpu > 1:
         span_model = torch.nn.DataParallel(span_model)
@@ -146,91 +127,73 @@ def initialize(args, tokenizer, t_total, span_num_labels, type_num_labels_src, t
     type_model.zero_grad()
 
     return span_model, type_model, optimizer_span, scheduler_span, optimizer_type, scheduler_type
-    # return span_model, optimizer_span, scheduler_span
 
-def validation(args, span_model, type_model, tokenizer, id_to_label_span, pad_token_label_id, best_dev, best_test, best_dev_bio, best_test_bio,\
-         global_step, t_total, epoch):
-    best_dev, best_dev_bio, is_updated_dev = evaluate(args, span_model, type_model, tokenizer, \
+def validation(args, span_model, type_model, tokenizer, id_to_label_span, pad_token_label_id, best_dev, test, best_dev_bio, test_bio,\
+         global_step, t_total, epoch, devs, tests):
+    best_dev, best_dev_bio, is_updated_dev = evaluate(devs, args, span_model, type_model, tokenizer, \
         id_to_label_span, pad_token_label_id, best_dev, best_dev_bio, mode="dev", logger=logger, \
         prefix='dev [Step {}/{} | Epoch {}/{}]'.format(global_step, t_total, epoch, args.num_train_epochs), verbose=False)
-    best_test, best_test_bio, is_updated_test = evaluate(args, span_model, type_model, tokenizer, \
-        id_to_label_span, pad_token_label_id, best_test, best_test_bio, mode="test", logger=logger, \
+    test, test_bio, _ = evaluate(tests, args, span_model, type_model, tokenizer, \
+        id_to_label_span, pad_token_label_id, test, test_bio, mode="test", logger=logger, \
         prefix='test [Step {}/{} | Epoch {}/{}]'.format(global_step, t_total, epoch, args.num_train_epochs), verbose=False)
+    
+    if args.local_rank in [-1, 0] and is_updated_dev:
+        path = os.path.join(args.output_dir, "checkpoint-best-span-dev")
+        logger.info("Saving span model checkpoint to %s", path)
+        if not os.path.exists(path):
+            os.makedirs(path)
+        model_to_save = (
+            span_model.module if hasattr(span_model, "module") else span_model
+        )  # Take care of distributed/parallel training
+        model_to_save.save_pretrained(path)
 
-    # output_dirs = []
-    # if args.local_rank in [-1, 0] and is_updated_dev:
-    #     # updated_self_training_teacher = True
-    #     path = os.path.join(args.output_dir, "checkpoint-best")
-    #     logger.info("Saving model checkpoint to %s", path)
-    #     if not os.path.exists(path):
-    #         os.makedirs(path)
-    #     model_to_save = (
-    #             span_model.module if hasattr(span_model, "module") else span_model
-    #     )  # Take care of distributed/parallel training
-    #     model_to_save.save_pretrained(path)
-    #     tokenizer.save_pretrained(path)
-    # # output_dirs = []
-    # if args.local_rank in [-1, 0] and is_updated2:
-    #     # updated_self_training_teacher = True
-    #     path = os.path.join(args.output_dir+tors, "checkpoint-best-2")
-    #     logger.info("Saving model checkpoint to %s", path)
-    #     if not os.path.exists(path):
-    #         os.makedirs(path)
-    #     model_to_save = (
-    #             model.module if hasattr(model, "module") else model
-    #     )  # Take care of distributed/parallel training
-    #     model_to_save.save_pretrained(path)
-    #     tokenizer.save_pretrained(path)
+        path = os.path.join(args.output_dir, "checkpoint-best-type-dev")
+        logger.info("Saving type model checkpoint to %s", path)
+        if not os.path.exists(path):
+            os.makedirs(path)
+        model_to_save = (
+            type_model.module if hasattr(type_model, "module") else type_model
+        )  # Take care of distributed/parallel training
+        model_to_save.save_pretrained(path)
 
-    return best_dev, best_test, best_dev_bio, best_test_bio, is_updated_dev
+        tokenizer.save_pretrained(path)
 
+    return best_dev, test, best_dev_bio, test_bio, is_updated_dev
 
 def cycle(iterable):
     while True:
         for x in iterable:
             yield x
 
-def share_loss(span_outputs, type_outputs, loss_funct, layers=3):
-    # ((batch_size, seq, dim), ...) # Layer-0, 1, ...
-    loss = 0.0
-    for i in range(layers):
-        loss += loss_funct(span_outputs[i], type_outputs[i])
-
-    return loss
-
-def train(args, train_dataset, train_dataset_meta, train_dataset_inter, id_to_label_span, id_to_label_type_src, id_to_label_type_tgt, tokenizer, pad_token_label_id):
+def train(args, train_dataset_src, train_dataset, id_to_label_span, id_to_label_type_src, id_to_label_type_tgt, tokenizer, pad_token_label_id):
     """ Train the model """
     # num_labels = len(labels)
     span_num_labels = len(id_to_label_span)
     type_num_labels_src = len(id_to_label_type_src)-1
     type_num_labels_tgt = len(id_to_label_type_tgt)-1
+    args.train_batch_size_src = args.per_gpu_train_batch_size_src * max(1, args.n_gpu)
+    train_sampler_src = RandomSampler(train_dataset_src) if args.local_rank==-1 else DistributedSampler(train_dataset_src)
+    train_dataloader_src = DataLoader(train_dataset_src, sampler=train_sampler_src, batch_size=args.train_batch_size_src)
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank==-1 else DistributedSampler(train_dataset)
     train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
-    args.train_batch_size_meta = args.per_gpu_train_batch_size_meta * max(1, args.n_gpu)
-    train_sampler_meta = RandomSampler(train_dataset_meta) if args.local_rank==-1 else DistributedSampler(train_dataset_meta)
-    train_dataloader_meta = DataLoader(train_dataset_meta, sampler=train_sampler_meta, batch_size=args.train_batch_size_meta)
-    # args.train_batch_size_inter = args.per_gpu_train_batch_size_inter * max(1, args.n_gpu)
-    # train_sampler_inter = RandomSampler(train_dataset_inter) if args.local_rank==-1 else DistributedSampler(train_dataset_inter)
-    # train_dataloader_inter = DataLoader(train_dataset_inter, sampler=train_sampler_inter, batch_size=args.train_batch_size_inter)
-    # train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size)
 
     if args.max_steps > 0:
         t_total = args.max_steps
-        args.num_train_epochs = args.max_steps//(len(train_dataloader)//args.gradient_accumulation_steps)+1
+        args.num_train_epochs = args.max_steps//(len(train_dataloader_src)//args.gradient_accumulation_steps)+1
     else:
-        t_total = len(train_dataloader)//args.gradient_accumulation_steps*args.num_train_epochs
+        t_total = len(train_dataloader_src)//args.gradient_accumulation_steps*50
 
     span_model, type_model, optimizer_span, scheduler_span, \
     optimizer_type, scheduler_type = initialize(args, tokenizer, t_total, span_num_labels, type_num_labels_src, type_num_labels_tgt)
 
     logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", len(train_dataset))
+    logger.info("  Num examples of src = %d", len(train_dataset_src))
     logger.info("  Num Epochs = %d", args.num_train_epochs)
-    logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
+    logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size_src)
     logger.info(
         "  Total train batch size (w. parallel, distributed & accumulation) = %d",
-        args.train_batch_size
+        args.train_batch_size_src
         * args.gradient_accumulation_steps
         * (torch.distributed.get_world_size() if args.local_rank != -1 else 1),
     )
@@ -245,103 +208,62 @@ def train(args, train_dataset, train_dataset_meta, train_dataset_inter, id_to_la
         epochs_trained, int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0]
     )
     set_seed(args)  # Added here for reproductibility
-    best_dev, best_test = [0, 0, 0], [0, 0, 0]
-    best_dev_bio, best_test_bio = [0, 0, 0], [0, 0, 0]
-    # meta_best_dev, meta_best_test = [0, 0, 0], [0, 0, 0]
-    # s1_best_dev, s1_best_test = [0, 0, 0], [0, 0, 0]
-    # s2_best_dev, s2_best_test = [0, 0, 0], [0, 0, 0]
-    # t1_best_dev, t1_best_test = [0, 0, 0], [0, 0, 0]
-    # t2_best_dev, t2_best_test = [0, 0, 0], [0, 0, 0]
+    best_dev, test = [0, 0, 0], [0, 0, 0]
+    best_dev_bio, test_bio = [0, 0, 0], [0, 0, 0]
+    devs = []
+    tests = []
 
-    # self_learning_teacher_model1 = model_s1
-    # self_learning_teacher_model2 = model_s2
-
-    # softmax = torch.nn.Softmax(dim=1)
-    # t_model1 = copy.deepcopy(model_s1)
-    # t_model2 = copy.deepcopy(model_s2)
-
-    # loss_regular = NegEntropy()
     loss_funct = MSELoss()
 
-    # begin_global_step = len(train_dataloader)*args.begin_epoch//args.gradient_accumulation_steps
-    iterator_meta = iter(cycle(train_dataloader_meta))
-    # iterator_inter = iter(cycle(train_dataloader_inter))
-    len_dataloader = len(train_dataloader)
+    iterator = iter(cycle(train_dataloader))
+
     for epoch in train_iterator:
-        epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
-        for step, batch in enumerate(epoch_iterator):
+        epoch_iterator = tqdm(train_dataloader_src, desc="Iteration", disable=args.local_rank not in [-1, 0])
+        for step, batch_src in enumerate(epoch_iterator):
             span_model.train()
             type_model.train()
+            batch_src = tuple(t.to(args.device) for t in batch_src)
+            batch = next(iterator)
             batch = tuple(t.to(args.device) for t in batch)
-            batch_meta = next(iterator_meta)
-            batch_meta = tuple(t.to(args.device) for t in batch_meta)
-            # batch_inter = next(iterator_inter)
-            # batch_inter = tuple(t.to(args.device) for t in batch_inter)
-            # p = float(step + epoch * len_dataloader) / t_total
-            # alpha = 2. / (1. + np.exp(-10 * p)) - 1
 
-            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels_bio": batch[2], "tgt": False, "reduction": "none"}
+            inputs = {"input_ids": batch_src[0], "attention_mask": batch_src[1], "labels_bio": batch_src[2], "tgt": False, "reduction": "none"}
+            outputs_span_src = span_model(**inputs)
+            inputs = {"input_ids": batch_src[0], "attention_mask": batch_src[1], "labels_type": batch_src[3], "logits_bio": outputs_span_src[2], "tgt": False, "reduction": "none"}
+            outputs_type_src = type_model(**inputs)
+            loss1 = span_model.loss(outputs_span_src[0], outputs_type_src[1], tau=args.tau_span, eps=args.eps_span)
+            loss2 = type_model.loss(outputs_type_src[0], outputs_span_src[1], tau=args.tau_type, eps=args.eps_type)
+            loss6 = share_loss(outputs_span_src[4], outputs_type_src[4], loss_funct, args.L)
+
+            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels_bio": batch[2], "tgt": True, "reduction": "none"}
             outputs_span = span_model(**inputs)
-            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels_type": batch[3], "logits_bio": outputs_span[2], "tgt": False}
+            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels_type": batch[3], "logits_bio": outputs_span[2], "tgt": True, "reduction": "none"}
             outputs_type = type_model(**inputs)
-            # loss1 = outputs_span[0]
-            loss1 = span_model.loss(outputs_span[0], outputs_type[1], delta=args.delta_span)
-            # loss2 = outputs_type[0]
-            loss2 = type_model.loss(outputs_type[0], outputs_span[1], delta=args.delta_type)
-            loss6 = share_loss(outputs_span[4], outputs_type[4], loss_funct)
+            loss3 = span_model.loss(outputs_span[0], outputs_type[1], tau=args.tau_span, eps=args.eps_span)
+            permute_embed = span_model.adv_attack(outputs_span[4][0], loss3, mu=args.mu)
+            inputs = {"inputs_embeds": permute_embed, "attention_mask": batch[1], "labels_bio": batch[2], "tgt": True, "reduction": "mean"}
+            outputs_span_ = span_model(**inputs)
+            loss31 = outputs_span_[0] 
+            loss4 = type_model.loss(outputs_type[0], outputs_span[1], tau=args.tau_type, eps=args.eps_type)
+            permute_embed = type_model.adv_attack(outputs_type[4][0], loss4, mu=args.mu)
+            inputs = {"inputs_embeds": permute_embed, "attention_mask": batch[1], "labels_type": batch[3], "tgt": True, "reduction": "mean"}
+            outputs_type_ = type_model(**inputs)
+            loss41 = outputs_type_[0] 
+            loss7 = share_loss(outputs_span[4], outputs_type[4], loss_funct, args.L)
 
-            inputs = {"input_ids": batch_meta[0], "attention_mask": batch_meta[1], "labels_bio": batch_meta[2], "tgt": True, "reduction": "none"}
-            outputs_span_meta = span_model(**inputs)
+            loss5 = type_model.mix_up(outputs_type_src[3], outputs_type[3], batch_src[3], batch[3], args.alpha, args.beta)
 
-            inputs = {"input_ids": batch_meta[0], "attention_mask": batch_meta[1], "labels_type": batch_meta[3], "logits_bio": outputs_span_meta[2], "tgt": True}
-            outputs_type_meta = type_model(**inputs)
-            # loss3 = outputs_span_meta[0]
-            loss3 = span_model.loss(outputs_span_meta[0], outputs_type_meta[1], delta=args.delta_span)
-            permute_embed = span_model.adv_attack(outputs_span_meta[4][0], loss3, epsilon=args.mu)
-            inputs = {"inputs_embeds": permute_embed, "attention_mask": batch_meta[1], "labels_bio": batch_meta[2], "tgt": True, "reduction": "mean"}
-            outputs_span_meta_ = span_model(**inputs)
-            loss31 = outputs_span_meta_[0] 
-            # loss4 = outputs_type_meta[0]
-            loss4 = type_model.loss(outputs_type_meta[0], outputs_span_meta[1], delta=args.delta_type)
-            permute_embed = type_model.adv_attack(outputs_type_meta[4][0], loss4, epsilon=args.mu)
-            inputs = {"inputs_embeds": permute_embed, "attention_mask": batch_meta[1], "labels_type": batch_meta[3], "tgt": True, "reduction": "mean"}
-            outputs_type_meta_ = type_model(**inputs)
-            loss41 = outputs_type_meta_[0] 
-
-            loss7 = share_loss(outputs_span_meta[4], outputs_type_meta[4], loss_funct)
-
-            # inputs = {"input_ids": batch_inter[0], "attention_mask": batch_inter[1], "labels_bio": batch_inter[2], "tgt": False, "reduction": "mean"}
-            # outputs_span_inter = span_model(**inputs)
-            # loss8 = outputs_span_inter[0]
-
-            loss5 = type_model.mix_up(outputs_type[3], outputs_type_meta[3], batch[3], batch_meta[3], args.alpha, args.beta)
-
-            # loss = outputs_span[0]+outputs_type[0]+outputs_span_meta[0]+outputs_type_meta[0]
-            loss = loss1+loss2+loss3+loss4+0.1*loss5+0.1*(loss6+loss7)+0.1*(loss31+loss41)
-            # loss = loss1+loss3+loss8
+            loss = loss1+loss2+loss3+loss4+0.1*loss5+0.1*(loss6+loss7)+0.1*(loss31+loss41) # ALL
 
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
             if args.gradient_accumulation_steps > 1:
                 loss = loss/args.gradient_accumulation_steps
 
-            # if args.fp16:
-            #     with amp.scale_loss(loss, optimizer_span) as scaled_loss:
-            #         scaled_loss.backward()
-            #     # with amp.scale_loss(loss, optimizer_type) as scaled_loss:
-            #     #     scaled_loss.backward()
-            # else:
             loss.backward()
 
             tr_loss += loss.item()
 
             if (step+1)%args.gradient_accumulation_steps == 0:
-                # if args.fp16:
-                #     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer_span), args.max_grad_norm)
-                #     # torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer_type), args.max_grad_norm)
-                # else:
-                #     torch.nn.utils.clip_grad_norm_(span_model.parameters(), args.max_grad_norm)
-                #     # torch.nn.utils.clip_grad_norm_(type_model.parameters(), args.max_grad_norm)
                 optimizer_span.step()
                 optimizer_type.step()
                 scheduler_span.step()  # Update learning rate schedule
@@ -352,11 +274,12 @@ def train(args, train_dataset, train_dataset_meta, train_dataset_inter, id_to_la
 
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step%args.logging_steps == 0:
                     # Log metrics
+                    # iters.append(global_step)
                     if args.evaluate_during_training:
-                        logger.info("***** training loss : %.4f *****", loss.item())
-                        best_dev, best_test, best_dev_bio, best_test_bio, _ = validation(args, span_model, type_model, tokenizer, \
-                            id_to_label_span, pad_token_label_id, best_dev, best_test, best_dev_bio, best_test_bio,\
-                            global_step, t_total, epoch)
+                        logger.info("***** training loss : %.4f*****", loss.item())
+                        best_dev, test, best_dev_bio, test_bio, _ = validation(args, span_model, type_model, tokenizer, \
+                            id_to_label_span, pad_token_label_id, best_dev, test, best_dev_bio, test_bio,\
+                            global_step, t_total, epoch, devs, tests)
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
@@ -373,7 +296,7 @@ def train(args, train_dataset, train_dataset_meta, train_dataset_inter, id_to_la
 def main():
     args = config()
     args.do_train = args.do_train.lower()
-    args.do_test = args.do_test.lower()
+    # args.do_test = args.do_test.lower()
 
     if (
         os.path.exists(args.output_dir)
@@ -423,7 +346,7 @@ def main():
 
     # Set seed
     set_seed(args)
-    id_to_label_span, id_to_label_type_tgt, id_to_label_type_src = get_labels(args.data_dir, args.dataset)
+    id_to_label_span, id_to_label_type_tgt, id_to_label_type_src = get_labels(args.data_dir, args.src_dataset, args.dataset)
     # num_labels = len(labels)
     # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
     pad_token_label_id = CrossEntropyLoss().ignore_index
@@ -446,47 +369,11 @@ def main():
     # Loss = CycleConsistencyLoss(non_entity_id, args.device)
 
     # Training
-    if args.do_train=="true":
-        train_dataset, train_dataset_meta, train_dataset_inter = load_and_cache_examples(args, tokenizer, pad_token_label_id, mode="train")
-        best_results = train(args, train_dataset, train_dataset_meta, train_dataset_inter,\
+    if args.do_train == "true":
+        train_dataset_src, train_dataset = load_and_cache_examples(args, tokenizer, pad_token_label_id, mode="train")
+        best_results = train(args, train_dataset_src, train_dataset, \
             id_to_label_span, id_to_label_type_src, id_to_label_type_tgt, tokenizer, pad_token_label_id)
         # logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
-    # # Testing
-    # if args.do_test=="true" and args.local_rank in [-1, 0]:
-    #     best_test = [0, 0, 0]
-    #     for tors in MODEL_NAMES:
-    #         best_test = predict(args, tors, labels, pad_token_label_id, best_test)
-
-# def predict(args, tors, labels, pad_token_label_id, best_test):
-#     path = os.path.join(args.output_dir+tors, "checkpoint-best-2")
-#     tokenizer = RobertaTokenizer.from_pretrained(path, do_lower_case=args.do_lower_case)
-#     model = RobertaForTokenClassification_Modified.from_pretrained(path)
-#     model.to(args.device)
-
-#     # if not best_test:
-   
-#     # result, predictions, _, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best=best_test, mode="test")
-#     result, _, best_test, _ = evaluate(args, model, tokenizer, labels, pad_token_label_id, best_test, mode="test", \
-#                                                         logger=logger, verbose=False)
-#     # Save results
-#     output_test_results_file = os.path.join(args.output_dir, "test_results.txt")
-#     with open(output_test_results_file, "w") as writer:
-#         for key in sorted(result.keys()):
-#             writer.write("{} = {}\n".format(key, str(result[key])))
-
-#     return best_test
-#     # Save predictions
-#     # output_test_predictions_file = os.path.join(args.output_dir, "test_predictions.txt")
-#     # with open(output_test_predictions_file, "w") as writer:
-#     #     with open(os.path.join(args.data_dir, args.dataset+"_test.json"), "r") as f:
-#     #         example_id = 0
-#     #         data = json.load(f)
-#     #         for item in data: # original tag_ro_id must be {XXX:0, xxx:1, ...}
-#     #             tags = item["tags"]
-#     #             golden_labels = [labels[tag] for tag in tags]
-#     #             output_line = str(item["str_words"]) + "\n" + str(golden_labels)+"\n"+str(predictions[example_id]) + "\n"
-#     #             writer.write(output_line)
-#     #             example_id += 1
 
 if __name__ == "__main__":
     main()

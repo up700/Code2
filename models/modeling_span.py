@@ -94,65 +94,17 @@ class Span_Detector(BertPreTrainedModel):
 
         return outputs
 
-    def loss(self, loss_bio, logits_type, delta=0.1):
+    def loss(self, loss_bio, logits_type, tau=0.1, eps=0.0):
         # loss_bio: B*L
         # logits_type: B*L, C
-        logits_type = torch.softmax(logits_type.detach()/delta, dim=-1)
-        weight = 1.5-logits_type[:, -1]
+        logits_type = torch.softmax(logits_type.detach()/tau, dim=-1)
+        weight = 1.0-logits_type[:, -1]+eps
         loss = torch.mean(loss_bio*weight)
         return loss
 
-    def adv_attack(self, emb, loss, epsilon):
+    def adv_attack(self, emb, loss, mu):
         loss_grad = torch.autograd.grad(loss, emb, retain_graph=True)[0]
         loss_grad_norm = torch.sqrt(torch.sum(loss_grad**2, dim=2))
-        perturbed_sentence = emb + epsilon * (loss_grad/(loss_grad_norm.unsqueeze(2)+1e-5))
+        perturbed_sentence = emb + mu * (loss_grad/(loss_grad_norm.unsqueeze(2)+1e-5))
         
         return perturbed_sentence
-
-
-# class Span_Learner(BertPreTrainedModel):
-#     def __init__(self, config, span_num_labels, type_num_labels, device):
-#         super().__init__(config)
-
-#         self.device_ = device # torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-#         self.span_num_labels = span_num_labels
-#         self.type_num_labels = type_num_labels
-#         self.bert = BertModel(config)
-#         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-#         self.hidden_size = config.hidden_size
-#         self.span = nn.Parameter(torch.randn(type_num_labels, config.hidden_size, span_num_labels))
-#         # self.classifier_meta = nn.Linear(config.hidden_size, num_labels)
-
-#         self.init_weights()
-
-#     def forward(
-#         self,
-#         input_ids=None,
-#         attention_mask=None,
-#         token_type_ids=None,
-#         position_ids=None,
-#         head_mask=None,
-#         inputs_embeds=None,
-#         labels=None,
-#         label_mask=None,
-#     ):
-#         # print(input_ids)
-#         outputs = self.bert(
-#             input_ids,
-#             attention_mask=attention_mask,
-#             token_type_ids=token_type_ids,
-#             position_ids=position_ids,
-#             head_mask=head_mask,
-#             inputs_embeds=inputs_embeds,
-#         )
-#         final_embedding = outputs[0] # B, L, D
-#         # print(final_embedding.size())
-#         sequence_output = self.dropout(final_embedding)
-#         seq_embed = sequence_output.view(-1, self.hidden_size) # B*L, D
-#         seq_size = seq_embed.size()
-#         logits = torch.bmm(seq_embed.unsqueeze(0).expand(self.type_num_labels, 
-#                         seq_size[0], seq_size[1]), self.span).permute(1, 0, 2) # B*L, type_num, span_num
-#         # logits = self.classifier_meta(sequence_output) # B, L, C
-#         # print(logits.size())
-
-#         return logits

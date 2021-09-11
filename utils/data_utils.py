@@ -69,17 +69,7 @@ def read_examples_from_file(args, data_dir, mode):
                 examples_src.append(InputExample(guid="%s-%d".format(mode, guid_index), words=words, labels=labels_ner, spans=labels_esi, types=labels_net))
                 guid_index += 1
 
-        file_path = os.path.join(data_dir, "inter_{}_{}.json".format(args.dataset, mode))
-        with open(file_path, "r") as f:
-            data = json.load(f)
-            for item in data:
-                words = item["str_words"]
-                labels_ner = item["tags_ner"]
-                labels_esi = item["tags_esi"]
-                labels_net = item["tags_net"]
-                examples_inter.append(InputExample(guid="%s-%d".format(mode, guid_index), words=words, labels=labels_ner, spans=labels_esi, types=labels_net))
-    
-    return examples, examples_src, examples_inter
+    return examples, examples_src
 
 def convert_examples_to_features(
     tag_to_id,
@@ -237,171 +227,10 @@ def convert_examples_to_features(
     
     return features
 
-def convert_examples_to_features_inter(
-    tag_to_id,
-    examples,
-    max_seq_length,
-    tokenizer,
-    cls_token_at_end=False,
-    cls_token="[CLS]",
-    cls_token_segment_id=1,
-    sep_token="[SEP]",
-    sep_token_extra=False,
-    pad_on_left=False,
-    pad_token=0,
-    pad_token_segment_id=0,
-    pad_token_label_id=-100,
-    sequence_a_segment_id=0,
-    mask_padding_with_zero=True,
-    show_exnum = -1,
-):
-    """ Loads a data file into a list of `InputBatch`s
-        `cls_token_at_end` define the location of the CLS token:
-            - False (Default, BERT/XLM pattern): [CLS] + A + [SEP] + B + [SEP]
-            - True (XLNet/GPT pattern): A + [SEP] + B + [SEP] + [CLS]
-        `cls_token_segment_id` define the segment id associated to the CLS token (0 for BERT, 2 for XLNet)
-    """
-    features = []
-    extra_long_samples = 0
-    span_non_id = tag_to_id["span"]["O"]
-    type_non_id = tag_to_id["type"]["O"]
-    for (ex_index, example) in enumerate(examples):
-        if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d", ex_index, len(examples))
-
-        tokens = []
-        span_label_ids = []
-        type_label_ids = []
-        label_mask = []
-        # print(len(example.words), len(example.labels))
-        for word, span_label, type_label in zip(example.words, example.spans, example.types):
-            # print(word, label)
-            span_label = tag_to_id["span"][span_label]
-            type_label_lst = type_label.split("-")
-            one_hot = [0]*len(tag_to_id["type"])
-            for t in type_label_lst:
-                one_hot[tag_to_id["type"][t]] = 1
-
-            # type_label = tag_to_id["type"][type_label]
-            word_tokens = tokenizer.tokenize(word)
-            tokens.extend(word_tokens)
-            # Use the real label id for the first token of the word, and padding ids for the remaining tokens
-            if len(word_tokens) > 0:
-                span_label_ids.extend([span_label] + [pad_token_label_id] * (len(word_tokens) - 1))
-                type_label_ids.extend([one_hot] + [[0]*len(tag_to_id["type"])] * (len(word_tokens) - 1))
-                label_mask.extend([1] + [0]*(len(word_tokens) - 1))
-            # full_label_ids.extend([label] * len(word_tokens))
-
-        # print(len(tokens), len(label_ids), len(full_label_ids))
-
-        # Account for [CLS] and [SEP] with "- 2" and with "- 3" for RoBERTa.
-        special_tokens_count = 3 if sep_token_extra else 2
-        if len(tokens) > max_seq_length - special_tokens_count:
-            tokens = tokens[: (max_seq_length - special_tokens_count)]
-            span_label_ids = span_label_ids[: (max_seq_length - special_tokens_count)]
-            type_label_ids = type_label_ids[: (max_seq_length - special_tokens_count)]
-            label_mask = label_mask[: (max_seq_length - special_tokens_count)]
-            extra_long_samples += 1
-
-        # The convention in BERT is:
-        # (a) For sequence pairs:
-        #  tokens:   [CLS] is this jack ##son ##ville ? [SEP] no it is not . [SEP]
-        #  type_ids:   0   0  0    0    0     0       0   0   1  1  1  1   1   1
-        # (b) For single sequences:
-        #  tokens:   [CLS] the dog is hairy . [SEP]
-        #  type_ids:   0   0   0   0  0     0   0
-        #
-        # Where "type_ids" are used to indicate whether this is the first
-        # sequence or the second sequence. The embedding vectors for `type=0` and
-        # `type=1` were learned during pre-training and are added to the wordpiece
-        # embedding vector (and position vector). This is not *strictly* necessary
-        # since the [SEP] token unambiguously separates the sequences, but it makes
-        # it easier for the model to learn the concept of sequences.
-        #
-        # For classification tasks, the first vector (corresponding to [CLS]) is
-        # used as as the "sentence vector". Note that this only makes sense because
-        # the entire model is fine-tuned.
-        tokens += [sep_token]
-        span_label_ids += [pad_token_label_id]
-        type_label_ids += [[0]*len(tag_to_id["type"])]
-        label_mask += [0]
-        if sep_token_extra:
-            # roberta uses an extra separator b/w pairs of sentences
-            tokens += [sep_token]
-            span_label_ids += [pad_token_label_id]
-            type_label_ids += [[0]*len(tag_to_id["type"])]
-            label_mask += [0]
-        segment_ids = [sequence_a_segment_id] * len(tokens)
-
-        if cls_token_at_end:
-            tokens += [cls_token]
-            span_label_ids += [pad_token_label_id]
-            type_label_ids += [[0]*len(tag_to_id["type"])]
-            segment_ids += [cls_token_segment_id]
-            label_mask += [0]
-        else:
-            tokens = [cls_token] + tokens
-            span_label_ids = [pad_token_label_id] + span_label_ids
-            type_label_ids = [[0]*len(tag_to_id["type"])] + type_label_ids
-            segment_ids = [cls_token_segment_id] + segment_ids
-            label_mask += [0]
-
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
-
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        input_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
-
-        # Zero-pad up to the sequence length.
-        padding_length = max_seq_length - len(input_ids)
-        if pad_on_left:
-            input_ids = ([pad_token] * padding_length) + input_ids
-            input_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + input_mask
-            segment_ids = ([pad_token_segment_id] * padding_length) + segment_ids
-            span_label_ids = ([pad_token_label_id] * padding_length) + span_label_ids
-            type_label_ids = ([[0]*len(tag_to_id["type"])] * padding_length) + type_label_ids
-            label_mask = ([0] * padding_length) + label_mask
-        else:
-            input_ids += [pad_token] * padding_length
-            input_mask += [0 if mask_padding_with_zero else 1] * padding_length
-            segment_ids += [pad_token_segment_id] * padding_length
-            span_label_ids += [pad_token_label_id] * padding_length
-            type_label_ids += [[0]*len(tag_to_id["type"])] * padding_length
-            label_mask += [0] * padding_length
-        
-        # print(len(input_ids))
-        # print(len(label_ids))
-        # print(max_seq_length)
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
-        assert len(span_label_ids) == max_seq_length
-        assert len(type_label_ids) == max_seq_length
-        assert len(label_mask) == max_seq_length
-
-        if ex_index < show_exnum:
-            logger.info("*** Example ***")
-            logger.info("guid: %s", example.guid)
-            logger.info("tokens: %s", " ".join([str(x) for x in tokens]))
-            logger.info("input_ids: %s", " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s", " ".join([str(x) for x in input_mask]))
-            logger.info("segment_ids: %s", " ".join([str(x) for x in segment_ids]))
-            logger.info("span_label_ids: %s", " ".join([str(x) for x in span_label_ids]))
-            # logger.info("type_label_ids: %s", " ".join([str(x) for x in type_label_ids]))
-            logger.info("label_mask: %s", " ".join([str(x) for x in label_mask]))
-        # input_ids, input_mask, segment_ids, label_ids, full_label_ids, span_label_ids, type_label_ids
-        features.append(
-            InputFeatures(input_ids=input_ids, input_mask=input_mask, segment_ids=segment_ids, \
-                label_ids=None, full_label_ids=None, span_label_ids=span_label_ids, type_label_ids=type_label_ids, label_mask=label_mask)
-        )
-    logger.info("Extra long example %d of %d", extra_long_samples, len(examples))
-    
-    return features
-
 def load_and_cache_examples(args, tokenizer, pad_token_label_id, mode):
 
     tags_to_id = tag_to_id(args.data_dir, args.dataset)
-    tags_to_id_src = tag_to_id(args.data_dir, "conll2003")
+    tags_to_id_src = tag_to_id(args.data_dir, args.src_dataset)
     
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
@@ -423,12 +252,6 @@ def load_and_cache_examples(args, tokenizer, pad_token_label_id, mode):
                 args.src_dataset, mode
             ),
         )
-        cached_features_file_inter = os.path.join(
-            args.data_dir,
-            "inter_{}_{}.pt".format(
-                args.dataset, mode
-            ),
-        )
 
     if os.path.exists(cached_features_file) and not args.overwrite_cache:
         logger.info("Loading features from cached file %s", cached_features_file)
@@ -436,10 +259,9 @@ def load_and_cache_examples(args, tokenizer, pad_token_label_id, mode):
         if mode == "train":
             logger.info("Loading source domain features from cached file %s", cached_features_file_src)
             features_src = torch.load(cached_features_file_src)
-            features_inter = torch.load(cached_features_file_inter)
     else:
         logger.info("Creating features from dataset file at %s", args.data_dir)
-        examples, examples_src, examples_inter = read_examples_from_file(args, args.data_dir, mode)
+        examples, examples_src = read_examples_from_file(args, args.data_dir, mode)
         features = convert_examples_to_features(
             tags_to_id,
             examples,
@@ -477,32 +299,13 @@ def load_and_cache_examples(args, tokenizer, pad_token_label_id, mode):
             pad_token_segment_id = 4 if args.model_type in ["xlnet"] else 0,
             pad_token_label_id = pad_token_label_id,
         )
-        features_inter = convert_examples_to_features_inter(
-            tags_to_id,
-            examples_inter,
-            args.max_seq_length,
-            tokenizer,
-            cls_token_at_end = bool(args.model_type in ["xlnet"]),
-            # xlnet has a cls token at the end
-            cls_token = tokenizer.cls_token,
-            cls_token_segment_id = 2 if args.model_type in ["xlnet"] else 0,
-            sep_token = tokenizer.sep_token,
-            sep_token_extra = bool(args.model_type in ["roberta"]),
-            # roberta uses an extra separator b/w pairs of sentences, cf. github.com/pytorch/fairseq/commit/1684e166e3da03f5b600dbb7855cb98ddfcd0805
-            pad_on_left = bool(args.model_type in ["xlnet"]),
-            # pad on the left for xlnet
-            pad_token = tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-            pad_token_segment_id = 4 if args.model_type in ["xlnet"] else 0,
-            pad_token_label_id = pad_token_label_id,
-        )
+        
         if args.local_rank in [-1, 0]:
             logger.info("Saving features into cached file %s", cached_features_file)
             torch.save(features, cached_features_file)
             if mode == "train":
                 logger.info("Saving features into cached file %s", cached_features_file_src)
                 torch.save(features_src, cached_features_file_src)
-                logger.info("Saving features into cached file %s", cached_features_file_inter)
-                torch.save(features_inter, cached_features_file_inter)
 
     if args.local_rank == 0 and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
@@ -516,10 +319,9 @@ def load_and_cache_examples(args, tokenizer, pad_token_label_id, mode):
     all_label_mask = torch.tensor([f.label_mask for f in features], dtype=torch.long)
     all_ids = torch.tensor([f for f in range(len(features))], dtype=torch.long)
 
-    dataset_meta = TensorDataset(all_input_ids, all_input_mask, all_span_label_ids, all_type_label_ids, all_label_mask, all_ids)
+    dataset = TensorDataset(all_input_ids, all_input_mask, all_span_label_ids, all_type_label_ids, all_label_mask, all_ids)
     
-    dataset = None
-    dataset_inter = None
+    dataset_src = None
     if mode == "train":
         # Convert to Tensors and build dataset
         all_input_ids_src = torch.tensor([f.input_ids for f in features_src], dtype=torch.long)
@@ -530,21 +332,11 @@ def load_and_cache_examples(args, tokenizer, pad_token_label_id, mode):
         all_label_mask_src = torch.tensor([f.label_mask for f in features_src], dtype=torch.long)
         all_ids_src = torch.tensor([f for f in range(len(features_src))], dtype=torch.long)
 
-        dataset = TensorDataset(all_input_ids_src, all_input_mask_src, all_span_label_ids_src, all_type_label_ids_src, all_label_mask_src, all_ids_src)
-
-        all_input_ids_inter = torch.tensor([f.input_ids for f in features_inter], dtype=torch.long)
-        all_input_mask_inter = torch.tensor([f.input_mask for f in features_inter], dtype=torch.long)
-        all_segment_ids_inter = torch.tensor([f.segment_ids for f in features_inter], dtype=torch.long)
-        all_span_label_ids_inter = torch.tensor([f.span_label_ids for f in features_inter], dtype=torch.long)
-        all_type_label_ids_inter = torch.tensor([f.type_label_ids for f in features_inter], dtype=torch.float)
-        all_label_mask_inter = torch.tensor([f.label_mask for f in features_inter], dtype=torch.long)
-        all_ids_inter = torch.tensor([f for f in range(len(features_inter))], dtype=torch.long)
-
-        dataset_inter = TensorDataset(all_input_ids_inter, all_input_mask_inter, all_span_label_ids_inter, all_type_label_ids_inter, all_label_mask_inter, all_ids_inter)
+        dataset_src = TensorDataset(all_input_ids_src, all_input_mask_src, all_span_label_ids_src, all_type_label_ids_src, all_label_mask_src, all_ids_src)
     
-    return dataset, dataset_meta, dataset_inter
+    return dataset_src, dataset
 
-def get_labels(path=None, dataset=None):
+def get_labels(path=None, dataset_src=None, dataset=None):
     if path and os.path.exists(path+dataset+"_tag_to_id.json"):
         labels_ner = {}
         labels_span = {}
@@ -560,7 +352,7 @@ def get_labels(path=None, dataset=None):
                 labels_type[idx] = l
 
         labels_type_src = {}
-        with open(path+"conll2003_tag_to_id.json", "r") as f:
+        with open(path+dataset_src+"_tag_to_id.json", "r") as f:
             data = json.load(f)
             # spans = data["span"]
             # for l, idx in spans.items():
@@ -647,24 +439,6 @@ def get_chunks(seq_type, seq_bio, tags):
                     chunks.append(chunk)
                 chunk_start = None
             chunk_start = i
-        # elif tok == inner:
-        #     if chunk_start is None:
-        #         chunk_start = i
-
-            # tok_chunk_class, tok_chunk_type = get_chunk_type(tok, idx_to_tag)
-            # if chunk_start is None:
-            #     if tok_chunk_class != "I":
-            #         chunk_start = i
-            #     else:
-            #         pass
-            # elif tok_chunk_type != chunk_type:
-            #     chunk = (chunk_type, chunk_start, i)
-            #     chunks.append(chunk)
-            #     if tok_chunk_class != "I":
-            #         chunk_type, chunk_start = tok_chunk_type, i
-            #     else:
-            #         chunk_type, chunk_start = None, None
-
         else:
             pass
         chunk_type = idx_to_type[seq_type[i].item()]
@@ -676,40 +450,6 @@ def get_chunks(seq_type, seq_bio, tags):
             chunk = (chunk_type, chunk_start, len(seq_bio))
             chunks.append(chunk)
     return chunks, chunks_bio
-
-def get_chunks_token(seq, tags):
-    """Given a sequence of tags, group entities and their position
-
-    Args:
-        seq: [4, 4, 0, 0, ...] sequence of labels
-        tags: dict["O"] = 4
-
-    Returns:
-        list of (chunk_type, chunk_start, chunk_end)
-
-    Example:
-        seq = [4, 5, 0, 3]
-        tags = {"B-PER": 4, "I-PER": 5, "B-LOC": 3}
-        result = [("PER", 0, 2), ("LOC", 3, 4)]
-
-    """
-    default = tags["O"]
-    idx_to_tag = {idx: tag for tag, idx in tags.items()}
-    chunks = []
-
-    chunk_type, chunk_start = None, None
-    for i, tok in enumerate(seq):
-        # if tok == default and chunk_type is not None:
-        #     chunk = (chunk_type, chunk_start, i)
-        #     chunks.append(chunk)
-        #     chunk_type, chunk_start = None, None
-        if tok != default:
-            chunk = (idx_to_tag[tok], i)      
-            chunks.append(chunk)
-        else:
-            pass
-
-    return chunks
 
 
 if __name__ == '__main__':
